@@ -5,7 +5,7 @@ from sklearn.linear_model import HuberRegressor
 from sklearn.svm import SVR, LinearSVR
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_squared_error
+from sklearn.metrics import mean_squared_error, accuracy_score, mean_absolute_error
 import csv
 import random
 from time import perf_counter
@@ -29,7 +29,7 @@ fig = plt.figure()
 ax = plt.axes()
 
 STEP_SIZE = 5
-RUNS = 1
+RUNS = 30
 
 """
 Generally, info on sklearn methods, xgboost, and numpy APIs was taken from the API-specific online documentation.
@@ -62,7 +62,7 @@ def get_data(fname=""):
 	return data, labels, columns
 
 # @timed
-def SVM(X, y, seed=None) -> SVR:
+def SVM(X, y, seed=None) -> LinearSVR:
 	"""Returns a fit sklearn Linear SVM Model"""
 	# SVM = SVR()
 	SVM = LinearSVR()
@@ -70,9 +70,9 @@ def SVM(X, y, seed=None) -> SVR:
 	return SVM
 
 # @timed
-def XGB(X, y, seed) -> xgb.XGBRegressor:
+def XGB(X, y, seed, n_estimators=100) -> xgb.XGBRegressor:
 	"""Returns a fit sklearn XGB Model"""
-	GBDT = xgb.XGBRegressor(random_state=seed, n_estimators=1500)
+	GBDT = xgb.XGBRegressor(random_state=seed, n_estimators=n_estimators)
 	GBDT.fit(X, y)
 	return GBDT
 
@@ -106,22 +106,26 @@ def test_model(model, test_data, test_labels):
 	print(type(model), " gives MSE: %.3f" % MSE)
 
 
-def train_and_get_test_MSE(func, train_data, train_labels, test_data, test_labels, seed, subarray_size=None):
+def train_and_get_test_MSE(func, train_data, train_labels, test_data, test_labels, seed, subarray_size=None, **kwargs):
 	"""Trains a model with the given arguments, and returns the test MSE"""
 	if subarray_size:
 		# generate k-sized subarrays
-		# seed2 = random.randint(0, 1e9)
-		# subarray_indices = get_subset_array(train_data.shape[0], subarray_size)
-		# model = func(X=train_data[subarray_indices,:], y=train_labels[subarray_indices], seed=seed2)
-		model = func(X=train_data[:subarray_size,:], y=train_labels[:subarray_size], seed=seed)
+		model = func(X=train_data[:subarray_size,:], y=train_labels[:subarray_size], seed=seed, **kwargs)
 	else:
-		model = func(X=train_data, y=train_labels, seed=seed)
-	return mean_squared_error(test_labels, model.predict(test_data))
+		model = func(X=train_data, y=train_labels, seed=seed, **kwargs)
+	return mean_squared_error(test_labels, model.predict(test_data))  # unrounded MSE
+	# return mean_squared_error(test_labels, np.round(model.predict(test_data)))  # rounded MSE
+	# return accuracy_score(test_labels, np.round(model.predict(test_data)))  # accuracy
+	# return mean_absolute_error(test_labels, model.predict(test_data))  # unrounded MAE
+	# return mean_absolute_error(test_labels, np.round(model.predict(test_data)))  # rounded MAE
 
 
-def get_mean_and_std(runs=30, *args, **kwargs):
+def get_mean_and_std(runs=30, seeds=None, *args, **kwargs):
 	"""Get the mean and std of some function"""
-	mse_list = np.array([train_and_get_test_MSE(*args, **kwargs) for _ in range(runs)])
+	if not (seeds is None):
+		mse_list = np.array([train_and_get_test_MSE(seed=seed2, *args, **kwargs) for seed2 in seeds])
+	else:
+		mse_list = np.array([train_and_get_test_MSE(*args, **kwargs) for _ in range(runs)])
 	return np.mean(mse_list), np.std(mse_list)
 
 
@@ -154,7 +158,7 @@ def save_plot(fname):
 
 def plot(means, stds, k, label, runs):
 	"""Plot the given MSE values with a bounds for the known std"""
-	plt.plot(k, means, lw=2.0, label=label)
+	plt.plot(k, means, lw=1.5, label=label)
 	stds = np.array(stds)
 	means = np.array(means)
 	# print(stds)
@@ -170,9 +174,7 @@ def get_k_shot_perf(func, train_data, train_labels, test_data, test_labels, seed
 	k = []
 	means = []
 	stds = []
-	# for i in tqdm(range(2, train_data.shape[0])):
 	for i in tqdm(range(train_data.shape[0], 15, -1*step)):  # 20
-	# for i in range(1, train_data.shape[0], step):
 		# # Test on subarrays
 		mean, std = get_mean_and_std(func=func, runs=runs, train_data=train_data, train_labels=train_labels, 
 			test_data=test_data, test_labels=test_labels, subarray_size=i, seed=seed)
@@ -202,12 +204,15 @@ def load_data(fname):
 
 def main():
 	# Generate seed
-	# seed = random.randint(0, 1e9)
-	seed = 102649420
+	seed = random.randint(0, 1e9)
+	# seed = 102649420  # seed used to generate my results
 	print("Seed: ", seed)
 
 	random.seed(seed)
 	np.random.seed(seed)
+
+	seeds = np.random.rand(RUNS) * 1e9
+	seeds = seeds.astype(int)
 	
 	# Grab Data
 	data, labels, columns = get_data(fname=FIX_DATAPATH)
@@ -216,27 +221,47 @@ def main():
 	# Split data into training and test sets
 	train_data, test_data, train_labels, test_labels = train_test_split(data, labels, random_state=seed, test_size=0.20)
 	
-	# # Test Support Vector Machines
-	# get_k_shot_perf(func=SVM, train_data=train_data, train_labels=train_labels, 
-	# 	test_data=test_data, test_labels=test_labels, seed=seed, fname="../Plots/SVM_Regressor", label='SVM', step=STEP_SIZE, runs=RUNS)
+	# Test Support Vector Machines
+	get_k_shot_perf(func=SVM, train_data=train_data, train_labels=train_labels, 
+		test_data=test_data, test_labels=test_labels, seed=seed, fname="../Plots/SVM_Regressor", label='SVM', step=STEP_SIZE, runs=RUNS)
+	mean, std = get_mean_and_std(func=SVM, runs=RUNS, train_data=train_data, train_labels=train_labels,
+			test_data=test_data, test_labels=test_labels, subarray_size=None, seeds=seeds)
+	print("SVM: %.3f ± %.3f" % (mean, std))
 
-	# # Test Gradient Boosted Decision Trees
+	# Test Gradient Boosted Decision Trees
 	get_k_shot_perf(func=XGB, train_data=train_data, train_labels=train_labels, 
 		test_data=test_data, test_labels=test_labels, seed=seed, fname="../Plots/XGB_Regressor", label='XGB', step=STEP_SIZE, runs=RUNS)
+	get_k_shot_perf(func=XGB, train_data=train_data, train_labels=train_labels, 
+		test_data=test_data, test_labels=test_labels, seed=seed, fname="../Plots/XGB_Regressor", label='XGB1500', step=STEP_SIZE, runs=RUNS, n_estimators=1500)
+	mean, std = get_mean_and_std(func=XGB, runs=RUNS, train_data=train_data, train_labels=train_labels,
+			test_data=test_data, test_labels=test_labels, subarray_size=None, seeds=seeds)
+	print("XGB: %.3f ± %.3f" % (mean, std))
+	mean, std = get_mean_and_std(func=XGB, runs=RUNS, train_data=train_data, train_labels=train_labels,
+			test_data=test_data, test_labels=test_labels, subarray_size=None, seeds=seeds, n_estimators=1500)
+	print("XGB1500: %.3f ± %.3f" % (mean, std))
 
 	# Test Random Forest
-	# get_k_shot_perf(func=RF, train_data=train_data, train_labels=train_labels, 
-		# test_data=test_data, test_labels=test_labels, seed=seed, fname="../Plots/RF_Regressor", label='RF', step=STEP_SIZE, runs=RUNS)
+	get_k_shot_perf(func=RF, train_data=train_data, train_labels=train_labels, 
+		test_data=test_data, test_labels=test_labels, seed=seed, fname="../Plots/RF_Regressor", label='RF', step=STEP_SIZE, runs=RUNS)
+	mean, std = get_mean_and_std(func=RF, runs=RUNS, train_data=train_data, train_labels=train_labels,
+			test_data=test_data, test_labels=test_labels, subarray_size=None, seeds=seeds)
+	print("RF: %.3f ± %.3f" % (mean, std))
 	
 	# Test Multiple Linear Regression
 	get_k_shot_perf(func=MLR, train_data=train_data, train_labels=train_labels, 
 		test_data=test_data, test_labels=test_labels, seed=seed, fname="../Plots/MLR_Regressor", label='MLR', step=STEP_SIZE, runs=RUNS)
+	mean, std = get_mean_and_std(func=MLR, runs=RUNS, train_data=train_data, train_labels=train_labels,
+			test_data=test_data, test_labels=test_labels, subarray_size=None, seeds=seeds)
+	print("MLR: %.3f ± %.3f" % (mean, std))
 	
 	# Test Huber Linear Regression
-	# get_k_shot_perf(func=HR, train_data=train_data, train_labels=train_labels, 
-		# test_data=test_data, test_labels=test_labels, seed=seed, fname="../Plots/HR_Regressor", label='HR', step=STEP_SIZE, runs=RUNS)
+	get_k_shot_perf(func=HR, train_data=train_data, train_labels=train_labels, 
+		test_data=test_data, test_labels=test_labels, seed=seed, fname="../Plots/HR_Regressor", label='HR', step=STEP_SIZE, runs=RUNS)
+	mean, std = get_mean_and_std(func=HR, runs=RUNS, train_data=train_data, train_labels=train_labels,
+			test_data=test_data, test_labels=test_labels, subarray_size=None, seeds=seeds)
+	print("HR: %.3f ± %.3f" % (mean, std))
 
-	save_plot(fname="./comb_plot")
+	save_plot(fname="../Plots/comb_plot")
 
 
 if __name__ == "__main__":
