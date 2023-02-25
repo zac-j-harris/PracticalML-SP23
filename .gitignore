@@ -11,3 +11,4 @@ style.scss~
 __pycache__/*
 *.pyc
 libraries/*
+*.Rhistory
